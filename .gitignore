@@ -1,0 +1,17 @@
+# Godot local/import cache
+.godot/
+.import/
+*.import
+
+# Godot exports and temporary files
+export.cfg
+export_presets.cfg
+*.translation
+*.tmp
+
+# macOS
+.DS_Store
+
+# Logs and generated previews
+*.log
+preview/
