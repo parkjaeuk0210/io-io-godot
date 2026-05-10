@@ -80,6 +80,7 @@ func _draw() -> void:
 	var visible_rect = _camera_world_rect(DRAW_CULL_MARGIN)
 	_draw_backdrop(visible_rect)
 	_draw_pellets(visible_rect)
+	_draw_debris(visible_rect)
 	_draw_ejected(visible_rect)
 	_draw_black_holes(visible_rect)
 	_draw_blobs(visible_rect)
@@ -215,6 +216,14 @@ func _draw_pellets(visible_rect: Rect2) -> void:
 		if not _circle_visible(visible_rect, pellet["pos"], radius + 2.0):
 			continue
 		_draw_soft_circle(pellet["pos"], radius + 1.6, pellet["color"])
+
+func _draw_debris(visible_rect: Rect2) -> void:
+	for id in world.debris.keys():
+		var pellet = world.debris[id]
+		var radius = MassMath.pellet_radius(pellet["mass"]) + 2.2
+		if not _circle_visible(visible_rect, pellet["pos"], radius + 4.0):
+			continue
+		_draw_soft_circle(pellet["pos"], radius + 3.2, pellet["color"])
 
 func _draw_ejected(visible_rect: Rect2) -> void:
 	for id in world.ejected.keys():

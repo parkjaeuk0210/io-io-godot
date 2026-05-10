@@ -9,18 +9,21 @@ var rng = RandomNumberGenerator.new()
 var players = {}
 var parts = {}
 var pellets = {}
+var debris = {}
 var ejected = {}
 var holes = {}
 var time = 0.0
 
 var _next_entity_id = 1000
 var _pellet_hash
+var _debris_hash
 var _ejected_hash
 var _hole_hash
 var _part_hash
 
 func _init() -> void:
 	_pellet_hash = SpatialHashScript.new(GameConstants.PELLET_CELL)
+	_debris_hash = SpatialHashScript.new(GameConstants.PELLET_CELL)
 	_ejected_hash = SpatialHashScript.new(GameConstants.PELLET_CELL)
 	_hole_hash = SpatialHashScript.new(GameConstants.PART_COLLISION_CELL)
 	_part_hash = SpatialHashScript.new(GameConstants.PART_COLLISION_CELL)
@@ -30,6 +33,7 @@ func setup(seed_value = 99173) -> void:
 	players.clear()
 	parts.clear()
 	pellets.clear()
+	debris.clear()
 	ejected.clear()
 	holes.clear()
 	time = 0.0
@@ -70,6 +74,7 @@ func step(dt: float) -> void:
 	_update_respawns(dt)
 	_update_bots(dt)
 	_update_parts(dt)
+	_update_debris(dt)
 	_update_ejected(dt)
 	_update_black_holes(dt)
 	_resolve_same_owner_spacing(dt)
@@ -277,6 +282,25 @@ func _update_parts(dt: float) -> void:
 		if part["mass"] > GameConstants.NATURAL_DECAY_MIN_MASS:
 			part["mass"] = max(GameConstants.NATURAL_DECAY_MIN_MASS, part["mass"] * (1.0 - GameConstants.NATURAL_DECAY_PER_SECOND * dt))
 
+func _update_debris(dt: float) -> void:
+	for id in debris.keys():
+		if not debris.has(id):
+			continue
+		var pellet = debris[id]
+		pellet["pos"] += pellet["vel"] * dt
+		pellet["vel"] = pellet["vel"].move_toward(Vector2.ZERO, 190.0 * dt)
+		pellet["life"] -= dt
+		if pellet["life"] <= 0.0:
+			debris.erase(id)
+			continue
+		var radius = MassMath.pellet_radius(pellet["mass"])
+		var pos: Vector2 = pellet["pos"]
+		if pos.x < radius or pos.x > GameConstants.WORLD_SIZE.x - radius:
+			pellet["vel"].x *= -0.35
+		if pos.y < radius or pos.y > GameConstants.WORLD_SIZE.y - radius:
+			pellet["vel"].y *= -0.35
+		pellet["pos"] = _clamp_to_arena(pos, radius)
+
 func _update_ejected(dt: float) -> void:
 	for id in ejected.keys():
 		if not ejected.has(id):
@@ -338,6 +362,9 @@ func _rebuild_hashes() -> void:
 	_pellet_hash.clear()
 	for id in pellets.keys():
 		_pellet_hash.insert(id, pellets[id]["pos"])
+	_debris_hash.clear()
+	for id in debris.keys():
+		_debris_hash.insert(id, debris[id]["pos"])
 	_ejected_hash.clear()
 	for id in ejected.keys():
 		_ejected_hash.insert(id, ejected[id]["pos"])
@@ -362,6 +389,13 @@ func _resolve_environment_consumption() -> void:
 				part["mass"] += _scaled_growth_gain(part["owner_id"], pellet["mass"])
 				pellets.erase(pellet_id)
 				_spawn_pellet()
+		for debris_id in _debris_hash.query(part["pos"], radius + 26.0):
+			if not debris.has(debris_id):
+				continue
+			var fragment = debris[debris_id]
+			if part["pos"].distance_to(fragment["pos"]) <= radius + MassMath.pellet_radius(fragment["mass"]) * 0.55:
+				part["mass"] += _scaled_growth_gain(part["owner_id"], fragment["mass"])
+				debris.erase(debris_id)
 		for eject_id in _ejected_hash.query(part["pos"], radius + 26.0):
 			if not ejected.has(eject_id):
 				continue
@@ -587,13 +621,31 @@ func _spawn_pellet(pos = Vector2.INF, mass = -1.0) -> int:
 	return id
 
 func _spawn_mass_spray(origin: Vector2, mass: float) -> void:
-	var remaining = max(mass, 0.0)
-	while remaining > 0.8:
-		var pellet_mass = min(rng.randf_range(1.0, 3.2), remaining)
+	var recoverable_mass = max(mass, 0.0) * GameConstants.MASS_SPRAY_RECOVERABLE_RATIO
+	if recoverable_mass <= 0.8:
+		return
+	var piece_count = int(clamp(ceil(recoverable_mass / 2.8), 1.0, float(GameConstants.MASS_SPRAY_MAX_PIECES)))
+	var remaining = recoverable_mass
+	for i in range(piece_count):
+		var pieces_left = piece_count - i
+		var average = remaining / float(pieces_left)
+		var pellet_mass = remaining if pieces_left == 1 else min(remaining, average * rng.randf_range(0.72, 1.32))
 		remaining -= pellet_mass
 		var dir = _random_dir()
-		var pos = _clamp_to_arena(origin + dir * rng.randf_range(22.0, 80.0))
-		_spawn_pellet(pos, pellet_mass)
+		var pos = _clamp_to_arena(origin + dir * rng.randf_range(22.0, 90.0))
+		_spawn_debris(pos, pellet_mass, dir * rng.randf_range(85.0, 260.0))
+
+func _spawn_debris(pos: Vector2, mass: float, vel = Vector2.ZERO) -> int:
+	var id = _next_id()
+	debris[id] = {
+		"id": id,
+		"pos": _clamp_to_arena(pos),
+		"vel": vel,
+		"mass": mass,
+		"life": GameConstants.MASS_SPRAY_LIFETIME,
+		"color": Color(0.86, 0.92, 1.0, 0.88)
+	}
+	return id
 
 func _spawn_black_hole(index: int) -> int:
 	var id = _next_id()

@@ -14,6 +14,7 @@ func _run() -> void:
 	_test_split_cap_and_mass()
 	_test_eject_loss()
 	_test_black_hole_threshold()
+	_test_black_hole_spray_uses_limited_transient_debris()
 	_test_blue_hole_reward_respects_total_mass_cap()
 	_test_food_gain_tapers_above_hard_cap()
 	_test_part_consumption_tapers_above_hard_cap()
@@ -75,6 +76,23 @@ func _test_black_hole_threshold() -> void:
 	world.parts[part_id]["pos"] = world.holes[hole_id]["pos"]
 	world.step(1.0 / GameConstants.SIM_TICK_RATE)
 	_assert(world.players[GameConstants.PLAYER_ID]["parts"].size() > 1, "danger-mass blob splits on black hole")
+
+func _test_black_hole_spray_uses_limited_transient_debris() -> void:
+	var world = SimWorldScript.new()
+	world.setup(18)
+	_keep_only_player(world)
+	_clear_environment(world)
+	world._spawn_mass_spray(Vector2(2800.0, 1800.0), 2000.0)
+	_assert(world.pellets.is_empty(), "black hole spray does not expand persistent pellet pool")
+	_assert(world.debris.size() > 0, "black hole spray creates transient debris")
+	_assert(world.debris.size() <= GameConstants.MASS_SPRAY_MAX_PIECES, "black hole spray debris count is capped")
+	var part_id = world.players[GameConstants.PLAYER_ID]["parts"][0]
+	var debris_id = world.debris.keys()[0]
+	world.parts[part_id]["pos"] = world.debris[debris_id]["pos"]
+	world.parts[part_id]["vel"] = Vector2.ZERO
+	var before_pellets = world.pellets.size()
+	world.step(1.0 / GameConstants.SIM_TICK_RATE)
+	_assert(world.pellets.size() == before_pellets, "eaten debris does not respawn as persistent food")
 
 func _test_blue_hole_reward_respects_total_mass_cap() -> void:
 	var world = SimWorldScript.new()
@@ -196,6 +214,7 @@ func _keep_only_owners(world, allowed: Array) -> void:
 
 func _clear_environment(world) -> void:
 	world.pellets.clear()
+	world.debris.clear()
 	world.ejected.clear()
 	world.holes.clear()
 
