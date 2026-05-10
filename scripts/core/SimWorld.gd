@@ -45,12 +45,17 @@ func setup(seed_value = 99173) -> void:
 
 func spawn_player(owner_id: int, player_name: String, is_bot: bool, mass = -1.0) -> void:
 	var color = GameConstants.COLORS[abs(owner_id) % GameConstants.COLORS.size()]
+	var spawn_pos = _random_arena_pos(240.0)
+	var initial_dir = _random_dir()
 	players[owner_id] = {
 		"id": owner_id,
 		"name": player_name,
 		"color": color,
 		"parts": [],
-		"input_dir": _random_dir(),
+		"input_dir": initial_dir,
+		"move_mode": "target",
+		"target_pos": _clamp_to_arena(spawn_pos + initial_dir * GameConstants.DIRECTION_TARGET_LOOKAHEAD),
+		"last_input_dir": initial_dir,
 		"is_bot": is_bot,
 		"alive": true,
 		"respawn_timer": 0.0,
@@ -58,7 +63,7 @@ func spawn_player(owner_id: int, player_name: String, is_bot: bool, mass = -1.0)
 		"bot_timer": rng.randf_range(0.1, 0.8)
 	}
 	var spawn_mass = mass if mass > 0.0 else GameConstants.INITIAL_PLAYER_MASS
-	_add_part(owner_id, _random_arena_pos(240.0), spawn_mass, Vector2.ZERO, 0.0)
+	_add_part(owner_id, spawn_pos, spawn_mass, Vector2.ZERO, 0.0)
 
 func step(dt: float) -> void:
 	time += dt
@@ -76,23 +81,44 @@ func step(dt: float) -> void:
 func set_player_input(owner_id: int, direction: Vector2) -> void:
 	if not players.has(owner_id):
 		return
+	var player = players[owner_id]
+	if direction.length_squared() <= 0.0001:
+		player["input_dir"] = Vector2.ZERO
+		player["move_mode"] = "idle"
+		return
 	if direction.length_squared() > 1.0:
 		direction = direction.normalized()
-	players[owner_id]["input_dir"] = direction
+	player["input_dir"] = direction
+	player["last_input_dir"] = direction
+	player["target_pos"] = _clamp_to_arena(get_player_center(owner_id) + direction * GameConstants.DIRECTION_TARGET_LOOKAHEAD)
+	player["move_mode"] = "target"
+
+func set_player_target(owner_id: int, target_pos: Vector2) -> void:
+	if not players.has(owner_id):
+		return
+	var player = players[owner_id]
+	target_pos = _clamp_to_arena(target_pos)
+	var offset = target_pos - get_player_center(owner_id)
+	if offset.length_squared() > GameConstants.INPUT_DEADZONE * GameConstants.INPUT_DEADZONE:
+		var direction = offset.normalized()
+		player["input_dir"] = direction
+		player["last_input_dir"] = direction
+	else:
+		player["input_dir"] = Vector2.ZERO
+	player["target_pos"] = target_pos
+	player["move_mode"] = "target"
 
 func request_split(owner_id: int) -> void:
 	if not players.has(owner_id) or not players[owner_id]["alive"]:
 		return
 	var player = players[owner_id]
-	var direction: Vector2 = player["input_dir"]
-	if direction.length_squared() < 0.001:
-		direction = Vector2.RIGHT
 	var candidates: Array = player["parts"].duplicate()
 	candidates.sort_custom(func(a, b): return parts.get(a, {}).get("mass", 0.0) > parts.get(b, {}).get("mass", 0.0))
 	for part_id in candidates:
 		if player["parts"].size() >= GameConstants.BASIC_SPLIT_CAP:
 			break
 		if parts.has(part_id) and parts[part_id]["mass"] >= GameConstants.SPLIT_MIN_MASS:
+			var direction = _action_direction_for_part(player, parts[part_id])
 			_split_part(part_id, direction)
 
 func request_eject(owner_id: int) -> void:
@@ -101,10 +127,8 @@ func request_eject(owner_id: int) -> void:
 	if players[owner_id]["eject_cooldown"] > 0.0:
 		return
 	players[owner_id]["eject_cooldown"] = GameConstants.EJECT_COOLDOWN
-	var direction: Vector2 = players[owner_id]["input_dir"]
-	if direction.length_squared() < 0.001:
-		direction = Vector2.RIGHT
-	for part_id in players[owner_id]["parts"].duplicate():
+	var player = players[owner_id]
+	for part_id in player["parts"].duplicate():
 		if not parts.has(part_id):
 			continue
 		var part = parts[part_id]
@@ -114,6 +138,7 @@ func request_eject(owner_id: int) -> void:
 		if part["mass"] - loss < GameConstants.NATURAL_DECAY_MIN_MASS:
 			continue
 		part["mass"] -= loss
+		var direction = _action_direction_for_part(player, part)
 		var pellet_mass = loss * GameConstants.EJECT_PELLET_GAIN_RATIO
 		var radius = MassMath.mass_to_radius(part["mass"])
 		var pos: Vector2 = part["pos"] + direction.normalized() * (radius + 18.0)
@@ -223,13 +248,13 @@ func _update_bots(dt: float) -> void:
 				prey = offset
 				prey_distance = dist
 		if threat.length_squared() > 1.0:
-			player["input_dir"] = threat.normalized()
+			set_player_input(owner_id, threat.normalized())
 		elif prey_distance < 920.0:
-			player["input_dir"] = prey.normalized()
+			set_player_input(owner_id, prey.normalized())
 			if prey_distance < 360.0 and largest >= GameConstants.SPLIT_MIN_MASS * 2.0 and rng.randf() < 0.22:
 				request_split(owner_id)
 		else:
-			player["input_dir"] = _direction_to_nearest_pellet(center)
+			set_player_input(owner_id, _direction_to_nearest_pellet(center))
 		if rng.randf() < 0.035:
 			request_eject(owner_id)
 
@@ -241,7 +266,7 @@ func _update_parts(dt: float) -> void:
 		var owner_id: int = part["owner_id"]
 		var input_dir = Vector2.ZERO
 		if players.has(owner_id):
-			input_dir = players[owner_id]["input_dir"]
+			input_dir = _movement_direction_for_part(players[owner_id], part)
 		var desired = input_dir * MassMath.mass_to_speed(part["mass"])
 		part["vel"] = part["vel"].move_toward(desired, 710.0 * dt)
 		part["pos"] += part["vel"] * dt
@@ -483,6 +508,27 @@ func _can_consume_part(attacker: Dictionary, victim: Dictionary) -> bool:
 	var rv = MassMath.mass_to_radius(victim["mass"])
 	var dist = attacker["pos"].distance_to(victim["pos"])
 	return dist + rv * GameConstants.CONSUME_OVERLAP_FRACTION <= ra
+
+func _movement_direction_for_part(player: Dictionary, part: Dictionary) -> Vector2:
+	if player.get("move_mode", "target") == "target":
+		var offset: Vector2 = player.get("target_pos", part["pos"]) - part["pos"]
+		if offset.length_squared() <= GameConstants.INPUT_DEADZONE * GameConstants.INPUT_DEADZONE:
+			return Vector2.ZERO
+		return offset.normalized()
+	var direction: Vector2 = player.get("input_dir", Vector2.ZERO)
+	if direction.length_squared() > 1.0:
+		return direction.normalized()
+	return direction
+
+func _action_direction_for_part(player: Dictionary, part: Dictionary) -> Vector2:
+	if player.get("move_mode", "target") == "target":
+		var offset: Vector2 = player.get("target_pos", part["pos"]) - part["pos"]
+		if offset.length_squared() > 0.001:
+			return offset.normalized()
+	var direction: Vector2 = player.get("last_input_dir", player.get("input_dir", Vector2.RIGHT))
+	if direction.length_squared() > 0.001:
+		return direction.normalized()
+	return Vector2.RIGHT
 
 func _add_part(owner_id: int, pos: Vector2, mass: float, vel = Vector2.ZERO, merge_time = 0.0, hole_cd = 0.0) -> int:
 	var id = _next_id()

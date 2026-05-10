@@ -4,6 +4,8 @@ class_name GameConstants
 const WORLD_SIZE = Vector2(5600.0, 3600.0)
 const SIM_TICK_RATE = 30.0
 const PLAYER_ID = 1
+const DIRECTION_TARGET_LOOKAHEAD = 720.0
+const INPUT_DEADZONE = 18.0
 
 const INITIAL_PLAYER_MASS = 42.0
 const INITIAL_BOT_MASS_MIN = 24.0

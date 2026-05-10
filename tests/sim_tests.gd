@@ -15,6 +15,8 @@ func _run() -> void:
 	_test_eject_loss()
 	_test_black_hole_threshold()
 	_test_step_stability()
+	_test_direction_input_uses_per_part_steering()
+	_test_unlocked_same_owner_parts_merge_on_shared_target()
 	if failures.is_empty():
 		print("sim_tests: OK")
 		quit(0)
@@ -79,6 +81,45 @@ func _test_step_stability() -> void:
 	_assert(world.pellets.size() >= GameConstants.PELLET_COUNT - 5, "pellet population stays replenished")
 	_assert(world.parts.size() > 0, "parts survive stress steps")
 
+func _test_direction_input_uses_per_part_steering() -> void:
+	var world = SimWorldScript.new()
+	world.setup(15)
+	_keep_only_player(world)
+	_clear_environment(world)
+	var owner_id = GameConstants.PLAYER_ID
+	var first_id = world.players[owner_id]["parts"][0]
+	var second_id = world._add_part(owner_id, Vector2(2000.0, 2000.0), 80.0, Vector2.ZERO, 0.0)
+	world.parts[first_id]["mass"] = 80.0
+	world.parts[first_id]["pos"] = Vector2(2000.0, 1800.0)
+	world.parts[first_id]["vel"] = Vector2.ZERO
+	world.parts[second_id]["vel"] = Vector2.ZERO
+	world.set_player_input(owner_id, Vector2.RIGHT)
+	world.step(1.0 / GameConstants.SIM_TICK_RATE)
+	var first_dir: Vector2 = world.parts[first_id]["vel"].normalized()
+	var second_dir: Vector2 = world.parts[second_id]["vel"].normalized()
+	_assert(abs(first_dir.cross(second_dir)) > 0.001, "same direction input creates per-part steering")
+
+func _test_unlocked_same_owner_parts_merge_on_shared_target() -> void:
+	var world = SimWorldScript.new()
+	world.setup(17)
+	_keep_only_player(world)
+	_clear_environment(world)
+	var owner_id = GameConstants.PLAYER_ID
+	var first_id = world.players[owner_id]["parts"][0]
+	var second_id = world._add_part(owner_id, Vector2(2600.0, 1920.0), 80.0, Vector2.ZERO, 0.0)
+	world.parts[first_id]["mass"] = 80.0
+	world.parts[first_id]["pos"] = Vector2(2600.0, 1680.0)
+	world.parts[first_id]["vel"] = Vector2.ZERO
+	world.parts[first_id]["merge_time"] = 0.0
+	world.parts[second_id]["vel"] = Vector2.ZERO
+	world.parts[second_id]["merge_time"] = 0.0
+	world.set_player_target(owner_id, Vector2(2600.0, 1800.0))
+	for i in range(120):
+		if world.players[owner_id]["parts"].size() == 1:
+			break
+		world.step(1.0 / GameConstants.SIM_TICK_RATE)
+	_assert(world.players[owner_id]["parts"].size() == 1, "unlocked same-owner parts merge on a shared target")
+
 func _keep_only_player(world) -> void:
 	for owner_id in world.players.keys():
 		if owner_id == GameConstants.PLAYER_ID:
@@ -86,6 +127,11 @@ func _keep_only_player(world) -> void:
 		for part_id in world.players[owner_id]["parts"].duplicate():
 			world.parts.erase(part_id)
 		world.players.erase(owner_id)
+
+func _clear_environment(world) -> void:
+	world.pellets.clear()
+	world.ejected.clear()
+	world.holes.clear()
 
 func _assert(condition: bool, message: String) -> void:
 	if not condition:

@@ -84,13 +84,8 @@ func _update_player_input() -> void:
 	if key_dir.length_squared() > 0.0:
 		world.set_player_input(GameConstants.PLAYER_ID, key_dir.normalized())
 		return
-	var center = world.get_player_center(GameConstants.PLAYER_ID)
 	var mouse_world = get_global_mouse_position()
-	var offset = mouse_world - center
-	if offset.length() > 18.0:
-		world.set_player_input(GameConstants.PLAYER_ID, offset.normalized())
-	else:
-		world.set_player_input(GameConstants.PLAYER_ID, Vector2.ZERO)
+	world.set_player_target(GameConstants.PLAYER_ID, mouse_world)
 
 func _update_camera(delta: float) -> void:
 	var center = world.get_player_center(GameConstants.PLAYER_ID)
