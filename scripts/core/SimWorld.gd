@@ -359,7 +359,7 @@ func _resolve_environment_consumption() -> void:
 				continue
 			var pellet = pellets[pellet_id]
 			if part["pos"].distance_to(pellet["pos"]) <= radius + MassMath.pellet_radius(pellet["mass"]) * 0.45:
-				part["mass"] += pellet["mass"]
+				part["mass"] += _scaled_growth_gain(part["owner_id"], pellet["mass"])
 				pellets.erase(pellet_id)
 				_spawn_pellet()
 		for eject_id in _ejected_hash.query(part["pos"], radius + 26.0):
@@ -369,7 +369,7 @@ func _resolve_environment_consumption() -> void:
 			if pellet["owner_id"] == part["owner_id"] and pellet["age"] < GameConstants.EJECT_PICKUP_DELAY:
 				continue
 			if part["pos"].distance_to(pellet["pos"]) <= radius + MassMath.pellet_radius(pellet["mass"]) * 0.55:
-				part["mass"] += pellet["mass"]
+				part["mass"] += _scaled_growth_gain(part["owner_id"], pellet["mass"])
 				ejected.erase(eject_id)
 		for hole_id in _hole_hash.query(part["pos"], radius + GameConstants.BLUE_BLACK_HOLE_RADIUS + 12.0):
 			if not holes.has(hole_id) or not parts.has(part_id):
@@ -407,10 +407,10 @@ func _resolve_part_consumption() -> void:
 			if a["owner_id"] == b["owner_id"]:
 				continue
 			if _can_consume_part(a, b):
-				a["mass"] += b["mass"]
+				a["mass"] += _scaled_growth_gain(a["owner_id"], b["mass"])
 				_remove_part(other_id)
 			elif _can_consume_part(b, a):
-				b["mass"] += a["mass"]
+				b["mass"] += _scaled_growth_gain(b["owner_id"], a["mass"])
 				_remove_part(part_id)
 
 func _resolve_recombine() -> void:
@@ -442,7 +442,12 @@ func _resolve_part_hole(part_id: int, hole_id: int) -> void:
 	if dist > part_radius + hole["radius"] * 0.46:
 		return
 	if hole["kind"] == "blue" and part["mass"] < GameConstants.BLACK_HOLE_DANGER_MASS:
-		part["mass"] += GameConstants.BLUE_BLACK_HOLE_REWARD
+		var owner_total = get_player_total_mass(part["owner_id"])
+		var reward = min(GameConstants.BLUE_BLACK_HOLE_REWARD, max(0.0, GameConstants.BLACK_HOLE_DANGER_MASS - owner_total))
+		reward = _scaled_growth_gain(part["owner_id"], reward)
+		if reward <= 0.0:
+			return
+		part["mass"] += reward
 		part["hole_cd"] = 0.65
 		_respawn_hole(hole_id)
 		return
@@ -508,6 +513,18 @@ func _can_consume_part(attacker: Dictionary, victim: Dictionary) -> bool:
 	var rv = MassMath.mass_to_radius(victim["mass"])
 	var dist = attacker["pos"].distance_to(victim["pos"])
 	return dist + rv * GameConstants.CONSUME_OVERLAP_FRACTION <= ra
+
+func _scaled_growth_gain(owner_id: int, gain: float) -> float:
+	if gain <= 0.0:
+		return 0.0
+	var total = get_player_total_mass(owner_id)
+	if total <= GameConstants.MASS_GAIN_SOFT_CAP:
+		return gain
+	if total >= GameConstants.MASS_GAIN_HARD_CAP:
+		return 0.0
+	var t = (total - GameConstants.MASS_GAIN_SOFT_CAP) / (GameConstants.MASS_GAIN_HARD_CAP - GameConstants.MASS_GAIN_SOFT_CAP)
+	var scale = pow(1.0 - t, 2.0)
+	return gain * scale
 
 func _movement_direction_for_part(player: Dictionary, part: Dictionary) -> Vector2:
 	if player.get("move_mode", "target") == "target":

@@ -4,6 +4,10 @@ const GameConstants = preload("res://scripts/core/GameConstants.gd")
 const MassMath = preload("res://scripts/core/MassMath.gd")
 const SimWorldScript = preload("res://scripts/core/SimWorld.gd")
 
+const DRAW_CULL_MARGIN = 180.0
+const SOFT_CIRCLE_TEXTURE_SIZE = 64
+const UI_UPDATE_INTERVAL = 0.125
+
 var world
 var camera: Camera2D
 var ui_layer: CanvasLayer
@@ -12,9 +16,12 @@ var leaderboard_label: Label
 var hint_label: Label
 var split_button: Button
 var eject_button: Button
+var soft_circle_texture: Texture2D
 var font: Font
 
 var tick_accumulator = 0.0
+var ui_update_accumulator = 0.0
+var last_viewport_size = Vector2.ZERO
 var stars = []
 var show_grid = false
 var classic_display = false
@@ -24,13 +31,18 @@ func _ready() -> void:
 	world = SimWorldScript.new()
 	world.setup(44771)
 	font = ThemeDB.fallback_font
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	soft_circle_texture = _create_soft_circle_texture()
 	camera = Camera2D.new()
 	camera.name = "GameCamera"
 	camera.enabled = true
-	camera.position = world.get_player_center(GameConstants.PLAYER_ID)
+	var initial_zoom = MassMath.camera_zoom(world.get_player_total_mass(GameConstants.PLAYER_ID))
+	camera.zoom = Vector2(initial_zoom, initial_zoom)
+	camera.position = _clamp_camera_center(world.get_player_center(GameConstants.PLAYER_ID), camera.zoom)
 	add_child(camera)
 	_generate_stars()
 	_create_ui()
+	_update_ui(0.0, true)
 	set_process(true)
 	set_process_unhandled_input(true)
 
@@ -45,7 +57,7 @@ func _process(delta: float) -> void:
 			tick_accumulator -= fixed_dt
 			guard += 1
 	_update_camera(delta)
-	_update_ui()
+	_update_ui(delta)
 	queue_redraw()
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -65,11 +77,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				_force_respawn_player()
 
 func _draw() -> void:
-	_draw_backdrop()
-	_draw_pellets()
-	_draw_ejected()
-	_draw_black_holes()
-	_draw_blobs()
+	var visible_rect = _camera_world_rect(DRAW_CULL_MARGIN)
+	_draw_backdrop(visible_rect)
+	_draw_pellets(visible_rect)
+	_draw_ejected(visible_rect)
+	_draw_black_holes(visible_rect)
+	_draw_blobs(visible_rect)
 
 func _update_player_input() -> void:
 	var key_dir = Vector2.ZERO
@@ -89,9 +102,10 @@ func _update_player_input() -> void:
 
 func _update_camera(delta: float) -> void:
 	var center = world.get_player_center(GameConstants.PLAYER_ID)
-	camera.position = camera.position.lerp(center, 1.0 - exp(-delta * 7.5))
 	var zoom = MassMath.camera_zoom(world.get_player_total_mass(GameConstants.PLAYER_ID))
 	camera.zoom = camera.zoom.lerp(Vector2(zoom, zoom), 1.0 - exp(-delta * 5.0))
+	var clamped_center = _clamp_camera_center(center, camera.zoom)
+	camera.position = camera.position.lerp(clamped_center, 1.0 - exp(-delta * 7.5))
 
 func _create_ui() -> void:
 	ui_layer = CanvasLayer.new()
@@ -119,6 +133,7 @@ func _create_ui() -> void:
 	hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint_label.add_theme_font_size_override("font_size", 15)
 	hint_label.add_theme_color_override("font_color", Color(0.72, 0.84, 0.96, 0.88))
+	hint_label.text = "Mouse/WASD move  Space split  E eject  C classic display  G grid  P pause"
 	ui_layer.add_child(hint_label)
 	split_button = Button.new()
 	split_button.text = "SPLIT"
@@ -143,8 +158,15 @@ func _layout_ui() -> void:
 	eject_button.position = Vector2(size.x - 126.0, size.y - 92.0)
 	eject_button.size = Vector2(108, 66)
 
-func _update_ui() -> void:
-	_layout_ui()
+func _update_ui(delta: float, force = false) -> void:
+	var viewport_size = get_viewport_rect().size
+	if force or viewport_size != last_viewport_size:
+		_layout_ui()
+		last_viewport_size = viewport_size
+	ui_update_accumulator += delta
+	if not force and ui_update_accumulator < UI_UPDATE_INTERVAL:
+		return
+	ui_update_accumulator = 0.0
 	var mass = int(round(world.get_player_total_mass(GameConstants.PLAYER_ID)))
 	var recombine = int(ceil(world.get_player_recombine_remaining(GameConstants.PLAYER_ID)))
 	var parts_count = 0
@@ -155,7 +177,6 @@ func _update_ui() -> void:
 	for row in world.get_leaderboard(6):
 		lines.append("%s: %d" % [row["name"], row["score"]])
 	leaderboard_label.text = "\n".join(lines)
-	hint_label.text = "Mouse/WASD move  Space split  E eject  C classic display  G grid  P pause"
 	split_button.disabled = not _player_has_mass(GameConstants.SPLIT_MIN_MASS)
 	eject_button.disabled = not _player_has_mass(GameConstants.EJECT_MIN_MASS)
 
@@ -167,38 +188,49 @@ func _player_has_mass(min_mass: float) -> bool:
 			return true
 	return false
 
-func _draw_backdrop() -> void:
+func _draw_backdrop(visible_rect: Rect2) -> void:
+	draw_rect(visible_rect, Color(0.012, 0.016, 0.024), true)
 	var rect = Rect2(Vector2.ZERO, GameConstants.WORLD_SIZE)
 	draw_rect(rect, Color(0.012, 0.016, 0.024), true)
 	for star in stars:
-		draw_circle(star["pos"], star["radius"], star["color"])
+		if _circle_visible(visible_rect, star["pos"], star["radius"]):
+			_draw_soft_circle(star["pos"], star["radius"] * 1.35, star["color"])
 	if show_grid:
 		var grid_color = Color(0.05, 0.55, 0.72, 0.22)
-		for x in range(0, int(GameConstants.WORLD_SIZE.x) + 1, 220):
+		var grid_step = 220
+		var start_x = max(0, floori(visible_rect.position.x / float(grid_step)) * grid_step)
+		var end_x = min(int(GameConstants.WORLD_SIZE.x), ceili(visible_rect.end.x / float(grid_step)) * grid_step)
+		var start_y = max(0, floori(visible_rect.position.y / float(grid_step)) * grid_step)
+		var end_y = min(int(GameConstants.WORLD_SIZE.y), ceili(visible_rect.end.y / float(grid_step)) * grid_step)
+		for x in range(start_x, end_x + 1, grid_step):
 			draw_line(Vector2(x, 0), Vector2(x, GameConstants.WORLD_SIZE.y), grid_color, 1.0)
-		for y in range(0, int(GameConstants.WORLD_SIZE.y) + 1, 220):
+		for y in range(start_y, end_y + 1, grid_step):
 			draw_line(Vector2(0, y), Vector2(GameConstants.WORLD_SIZE.x, y), grid_color, 1.0)
 	draw_rect(rect, Color(0.0, 0.82, 0.92, 0.72), false, 3.0)
 
-func _draw_pellets() -> void:
+func _draw_pellets(visible_rect: Rect2) -> void:
 	for pellet_id in world.pellets.keys():
 		var pellet = world.pellets[pellet_id]
 		var radius = MassMath.pellet_radius(pellet["mass"])
-		draw_circle(pellet["pos"], radius + 1.4, Color(1.0, 1.0, 1.0, 0.10))
-		draw_circle(pellet["pos"], radius, pellet["color"])
+		if not _circle_visible(visible_rect, pellet["pos"], radius + 2.0):
+			continue
+		_draw_soft_circle(pellet["pos"], radius + 1.6, pellet["color"])
 
-func _draw_ejected() -> void:
+func _draw_ejected(visible_rect: Rect2) -> void:
 	for id in world.ejected.keys():
 		var pellet = world.ejected[id]
 		var radius = MassMath.pellet_radius(pellet["mass"]) + 3.0
-		draw_circle(pellet["pos"], radius + 4.0, Color(pellet["color"].r, pellet["color"].g, pellet["color"].b, 0.16))
-		draw_circle(pellet["pos"], radius, pellet["color"])
+		if not _circle_visible(visible_rect, pellet["pos"], radius + 4.0):
+			continue
+		_draw_soft_circle(pellet["pos"], radius + 4.0, pellet["color"])
 
-func _draw_black_holes() -> void:
+func _draw_black_holes(visible_rect: Rect2) -> void:
 	for id in world.holes.keys():
 		var hole = world.holes[id]
 		var pos: Vector2 = hole["pos"]
 		var radius: float = hole["radius"]
+		if not _circle_visible(visible_rect, pos, radius * 1.45):
+			continue
 		var blue = hole["kind"] == "blue"
 		var base = Color(0.20, 0.88, 1.0, 0.94) if blue else Color(0.70, 0.70, 0.72, 0.92)
 		var core = Color(0.03, 0.04, 0.05, 1.0) if not blue else Color(0.05, 0.22, 0.28, 1.0)
@@ -211,12 +243,15 @@ func _draw_black_holes() -> void:
 			draw_arc(pos, r, a, a + PI * 1.24, 34, Color(base.r, base.g, base.b, 0.54 - float(i) * 0.06), 4.0)
 		draw_arc(pos, radius * 0.98, 0.0, TAU, 72, Color(0.88, 0.96, 1.0, 0.46), 2.0)
 
-func _draw_blobs() -> void:
+func _draw_blobs(visible_rect: Rect2) -> void:
 	var ids = world.parts.keys()
 	ids.sort_custom(func(a, b): return world.parts[a]["mass"] < world.parts[b]["mass"])
 	for part_id in ids:
 		if world.parts.has(part_id):
-			_draw_blob(world.parts[part_id])
+			var part = world.parts[part_id]
+			var radius = MassMath.mass_to_radius(part["mass"])
+			if _circle_visible(visible_rect, part["pos"], radius * 1.25):
+				_draw_blob(part)
 
 func _draw_blob(part: Dictionary) -> void:
 	var pos: Vector2 = part["pos"]
@@ -270,6 +305,65 @@ func _generate_stars() -> void:
 			"radius": star_rng.randf_range(1.0, 3.1),
 			"color": color
 		})
+
+func _camera_world_rect(margin: float) -> Rect2:
+	var viewport_size = get_viewport_rect().size
+	var zoom = Vector2.ONE
+	var center = GameConstants.WORLD_SIZE * 0.5
+	if camera != null:
+		zoom = camera.zoom
+		center = camera.position
+	var visible_size = Vector2(
+		viewport_size.x / max(zoom.x, 0.001),
+		viewport_size.y / max(zoom.y, 0.001)
+	)
+	var margin_vec = Vector2(margin, margin)
+	return Rect2(center - visible_size * 0.5 - margin_vec, visible_size + margin_vec * 2.0)
+
+func _clamp_camera_center(center: Vector2, zoom: Vector2) -> Vector2:
+	var viewport_size = get_viewport_rect().size
+	var visible_size = Vector2(
+		viewport_size.x / max(zoom.x, 0.001),
+		viewport_size.y / max(zoom.y, 0.001)
+	)
+	var clamped = center
+	if visible_size.x >= GameConstants.WORLD_SIZE.x:
+		clamped.x = GameConstants.WORLD_SIZE.x * 0.5
+	else:
+		var half_width = visible_size.x * 0.5
+		clamped.x = clamp(center.x, half_width, GameConstants.WORLD_SIZE.x - half_width)
+	if visible_size.y >= GameConstants.WORLD_SIZE.y:
+		clamped.y = GameConstants.WORLD_SIZE.y * 0.5
+	else:
+		var half_height = visible_size.y * 0.5
+		clamped.y = clamp(center.y, half_height, GameConstants.WORLD_SIZE.y - half_height)
+	return clamped
+
+func _circle_visible(rect: Rect2, pos: Vector2, radius: float) -> bool:
+	var diameter = radius * 2.0
+	return rect.intersects(Rect2(pos - Vector2(radius, radius), Vector2(diameter, diameter)))
+
+func _draw_soft_circle(pos: Vector2, radius: float, color: Color) -> void:
+	var diameter = radius * 2.0
+	draw_texture_rect(soft_circle_texture, Rect2(pos - Vector2(radius, radius), Vector2(diameter, diameter)), false, color)
+
+func _create_soft_circle_texture() -> Texture2D:
+	var image = Image.create(SOFT_CIRCLE_TEXTURE_SIZE, SOFT_CIRCLE_TEXTURE_SIZE, false, Image.FORMAT_RGBA8)
+	var center = Vector2(SOFT_CIRCLE_TEXTURE_SIZE - 1, SOFT_CIRCLE_TEXTURE_SIZE - 1) * 0.5
+	var outer_radius = float(SOFT_CIRCLE_TEXTURE_SIZE - 2) * 0.5
+	var core_fraction = 0.74
+	for y in range(SOFT_CIRCLE_TEXTURE_SIZE):
+		for x in range(SOFT_CIRCLE_TEXTURE_SIZE):
+			var dist = Vector2(x, y).distance_to(center)
+			var t = dist / outer_radius
+			var alpha = 0.0
+			if t <= core_fraction:
+				alpha = 1.0
+			elif t <= 1.0:
+				var fade = 1.0 - ((t - core_fraction) / (1.0 - core_fraction))
+				alpha = pow(fade, 1.8) * 0.38
+			image.set_pixel(x, y, Color(1.0, 1.0, 1.0, alpha))
+	return ImageTexture.create_from_image(image)
 
 func _on_split_pressed() -> void:
 	world.request_split(GameConstants.PLAYER_ID)

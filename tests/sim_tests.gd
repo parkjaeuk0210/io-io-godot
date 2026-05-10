@@ -14,6 +14,9 @@ func _run() -> void:
 	_test_split_cap_and_mass()
 	_test_eject_loss()
 	_test_black_hole_threshold()
+	_test_blue_hole_reward_respects_total_mass_cap()
+	_test_food_gain_tapers_above_hard_cap()
+	_test_part_consumption_tapers_above_hard_cap()
 	_test_step_stability()
 	_test_direction_input_uses_per_part_steering()
 	_test_unlocked_same_owner_parts_merge_on_shared_target()
@@ -73,6 +76,66 @@ func _test_black_hole_threshold() -> void:
 	world.step(1.0 / GameConstants.SIM_TICK_RATE)
 	_assert(world.players[GameConstants.PLAYER_ID]["parts"].size() > 1, "danger-mass blob splits on black hole")
 
+func _test_blue_hole_reward_respects_total_mass_cap() -> void:
+	var world = SimWorldScript.new()
+	world.setup(12)
+	_keep_only_player(world)
+	_clear_environment(world)
+	var owner_id = GameConstants.PLAYER_ID
+	var first_id = world.players[owner_id]["parts"][0]
+	var second_id = world._add_part(owner_id, Vector2(2800.0, 1800.0), 160.0, Vector2.ZERO, 0.0)
+	world.parts[first_id]["mass"] = 120.0
+	world.parts[first_id]["pos"] = Vector2(2800.0, 1800.0)
+	world.parts[first_id]["vel"] = Vector2.ZERO
+	world.parts[second_id]["vel"] = Vector2.ZERO
+	var hole_id = world._spawn_black_hole(1)
+	world.holes[hole_id]["kind"] = "blue"
+	world.holes[hole_id]["pos"] = world.parts[first_id]["pos"]
+	world.holes[hole_id]["vel"] = Vector2.ZERO
+	world.holes[hole_id]["base_vel"] = Vector2.ZERO
+	var before = world.get_player_total_mass(owner_id)
+	world.step(1.0 / GameConstants.SIM_TICK_RATE)
+	var after = world.get_player_total_mass(owner_id)
+	_assert(before >= GameConstants.BLACK_HOLE_DANGER_MASS, "test setup starts above blue reward cap")
+	_assert(after <= before + 0.01, "blue hole reward does not feed already large total mass")
+
+func _test_food_gain_tapers_above_hard_cap() -> void:
+	var world = SimWorldScript.new()
+	world.setup(14)
+	_keep_only_player(world)
+	_clear_environment(world)
+	var owner_id = GameConstants.PLAYER_ID
+	var part_id = world.players[owner_id]["parts"][0]
+	world.parts[part_id]["mass"] = GameConstants.MASS_GAIN_HARD_CAP + 800.0
+	world.parts[part_id]["pos"] = Vector2(2800.0, 1800.0)
+	world.parts[part_id]["vel"] = Vector2.ZERO
+	world._spawn_pellet(world.parts[part_id]["pos"], 3.0)
+	var before = world.get_player_total_mass(owner_id)
+	world.step(1.0 / GameConstants.SIM_TICK_RATE)
+	var after = world.get_player_total_mass(owner_id)
+	_assert(after <= before, "food gain is suppressed above hard cap")
+
+func _test_part_consumption_tapers_above_hard_cap() -> void:
+	var world = SimWorldScript.new()
+	world.setup(16)
+	_keep_only_owners(world, [GameConstants.PLAYER_ID, 20])
+	_clear_environment(world)
+	var owner_id = GameConstants.PLAYER_ID
+	var prey_owner_id = 20
+	var attacker_id = world.players[owner_id]["parts"][0]
+	var victim_id = world.players[prey_owner_id]["parts"][0]
+	world.parts[attacker_id]["mass"] = GameConstants.MASS_GAIN_HARD_CAP + 500.0
+	world.parts[attacker_id]["pos"] = Vector2(2800.0, 1800.0)
+	world.parts[attacker_id]["vel"] = Vector2.ZERO
+	world.parts[victim_id]["mass"] = 120.0
+	world.parts[victim_id]["pos"] = Vector2(2800.0, 1800.0)
+	world.parts[victim_id]["vel"] = Vector2.ZERO
+	var before = world.get_player_total_mass(owner_id)
+	world.step(1.0 / GameConstants.SIM_TICK_RATE)
+	var after = world.get_player_total_mass(owner_id)
+	_assert(not world.parts.has(victim_id), "oversized part can still remove consumed victim")
+	_assert(after <= before, "part consumption gain is suppressed above hard cap")
+
 func _test_step_stability() -> void:
 	var world = SimWorldScript.new()
 	world.setup(13)
@@ -121,8 +184,11 @@ func _test_unlocked_same_owner_parts_merge_on_shared_target() -> void:
 	_assert(world.players[owner_id]["parts"].size() == 1, "unlocked same-owner parts merge on a shared target")
 
 func _keep_only_player(world) -> void:
+	_keep_only_owners(world, [GameConstants.PLAYER_ID])
+
+func _keep_only_owners(world, allowed: Array) -> void:
 	for owner_id in world.players.keys():
-		if owner_id == GameConstants.PLAYER_ID:
+		if allowed.has(owner_id):
 			continue
 		for part_id in world.players[owner_id]["parts"].duplicate():
 			world.parts.erase(part_id)
